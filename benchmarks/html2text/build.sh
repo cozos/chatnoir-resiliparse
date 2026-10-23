@@ -15,6 +15,7 @@
 #
 # Each source build gets its native dependencies from deps.sh (pass --from-source if vcpkg can't download sources).
 # Set PYTHON to choose the interpreter (default: python3.11, the version DatologyAI's pipelines use).
+# Set CYTHON to pin a different Cython for the build (e.g. "cython<3.1" for trees from 2024).
 
 set -euo pipefail
 
@@ -57,7 +58,7 @@ DEPS="$BENCH_DIR/deps/$NAME"
 PKG="$SRC/resiliparse-py"
 [ -f "$PKG/setup.py" ] || PKG="$SRC/resiliparse"
 LIB_DIR=$(echo "$DEPS"/*/lib)
-pip_install setuptools 'cython<3.2'
+pip_install setuptools "${CYTHON:-cython<3.2}"
 # 1.x setup.py reads RESILIPARSE_VCPKG_PATH; 0.x setup.py relies on the compiler's search paths
 RESILIPARSE_VCPKG_PATH="$DEPS" CPATH="$(dirname "$LIB_DIR")/include" LIBRARY_PATH="$LIB_DIR" \
     LDFLAGS="-Wl,-rpath,$LIB_DIR" \
