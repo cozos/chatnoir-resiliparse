@@ -89,5 +89,8 @@ variants built from source with the same dependencies (2026-10):
 | this fork (1.0.9+datology.1) | 1.64 s | 3.88 s | 2.95 s | 8.48 s | 1.76x | 0 |
 | Marin 0.17.2 | 2.02 s | 4.76 s | 13.56 s | 20.35 s | 0.73x | 5,940 |
 
-Marin's fork extracts differently (see the `marin/main-legacy` branch): it never updates the DOM depth it passes to the main
-content heuristics, so every depth-dependent rule sees the same depth.
+Marin's fork is upstream `develop` as of 2024-12-03 (7a64d450) plus two changes: `main_content` keeps lists inside
+`<article>`/`<main>` and only drops other lists that consist entirely of links, and a new `extract_simplified_dom()`
+returns the kept DOM as HTML (Marin converts it to Markdown). Most of its gap to 1.0.9 is upstream's work since 2024:
+7a64d450 itself takes 15.5 s here, and Marin's list rule adds about 6%. `extract_simplified_dom()` never updates the
+depth it passes to the main content rules, so every depth-dependent rule sees depth 0.
