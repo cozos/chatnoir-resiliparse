@@ -22,7 +22,7 @@ from cpython.ref cimport PyObject
 from libcpp.set cimport set as unordered_set
 
 from resiliparse_inc.lexbor cimport *
-from resiliparse.parse.encoding cimport bytes_to_str, map_encoding_to_html5
+from resiliparse.parse.encoding cimport bytes_to_str, is_valid_utf8, map_encoding_to_html5
 
 __all__ = [
     'DOMCollection',
@@ -112,43 +112,6 @@ cdef lxb_css_selector_list_t* parse_css_selectors(lxb_css_parser_t* parser, cons
         with gil:
             raise ValueError(f'CSS parser error: {err.decode().strip()}')
     return sel_list
-
-
-cdef inline lxb_dom_node_t* next_node(const lxb_dom_node_t* root_node, lxb_dom_node_t* node,
-                                      size_t* depth=NULL, bint* end_tag=NULL) noexcept nogil:
-    """
-    DOM tree pre-order traversal primitive.
-    
-    This is a more flexible, step-wise implementation of ``lxb_dom_node_simple_walk()``, which
-    allows a client to react on closing tags.
-
-    :param root_node: root node at which traversal started
-    :param node: current node
-    :param depth: tracks DOM depth if not ``NULL`` (needs to be initialized and passed back in at each step)
-    :param end_tag: if not ``NULL``, tracks whether step was an end tag (needs to be initialized with ``False``
-                    and passed back in at each step)
-    :returns: next node or ``NULL`` if done
-    """
-    cdef bint is_end = end_tag and end_tag[0]
-
-    if not is_end and node.first_child:
-        if depth:
-            preinc(depth[0])
-        return node.first_child
-    else:
-        while not node.next and node != root_node:
-            node = node.parent
-            if depth:
-                predec(depth[0])
-            if end_tag:
-                end_tag[0] = True
-                return node
-
-        if end_tag:
-            end_tag[0] = False
-        if node == root_node:
-            return NULL
-        return node.next
 
 
 cdef inline string get_node_text(lxb_dom_node_t* node) noexcept nogil:
@@ -1682,11 +1645,17 @@ cdef HTMLTree create_html_tree(bytes document, bint reencode=True, str encoding=
     :return: :class:`HTMLTree` instance
     """
     encoding = map_encoding_to_html5(encoding)
+    cdef size_t bom_len = 0
+    if reencode and encoding == 'utf-8':
+        # Decoding valid UTF-8 and encoding it again only strips the BOM, so skip it
+        bom_len = 3 if document.startswith(b'\xef\xbb\xbf') else 0
+        reencode = not is_valid_utf8(<const char*>document + bom_len, len(document) - bom_len)
     if reencode:
         document = bytes_to_str(document, encoding, errors).encode()
+        bom_len = 0
     cdef lxb_status_t status
-    cdef const lxb_char_t* html = <const lxb_char_t*>document
-    cdef size_t html_len = len(document)
+    cdef const lxb_char_t* html = <const lxb_char_t*>document + bom_len
+    cdef size_t html_len = len(document) - bom_len
     cdef HTMLTree tree = HTMLTree.__new__(HTMLTree)
     with nogil:
         status = lxb_html_document_parse(tree.dom_document, html, html_len)

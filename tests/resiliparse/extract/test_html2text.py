@@ -210,6 +210,18 @@ Sorry, your browser doesn't support VB Script!
 Copyright (C) 2021 Foo Bar"""
 
 
+def test_skip_elements():
+    # Script, style (also inside SVG), template and noscript elements are skipped by default
+    html = '<p>a</p><script>s</script><style>s</style><svg><style>x</style></svg>' \
+           '<template><p>t</p></template><noscript>n</noscript><p>b</p>'
+    assert extract_plain_text(html) == 'a\n\nb'
+    assert extract_plain_text('<p>a</p><noscript>n</noscript>', noscript=True) == 'a\n\nn'
+
+    # Tag names (in any case) and other CSS selectors can be mixed
+    html = '<nav>n</nav><p class="ads">ad</p><P>keep</P><ASIDE>aside</ASIDE>'
+    assert extract_plain_text(html, skip_elements=['nav', '.ads', 'ASIDE']) == 'keep'
+
+
 def test_main_content_extraction():
     assert extract_plain_text(tree, alt_texts=False, main_content=True) == \
            "foo\n\nbaz\nbar"
@@ -217,6 +229,49 @@ def test_main_content_extraction():
            "foo\n\nbaz\nbar\n\nSome image"
     assert extract_plain_text(tree, alt_texts=False, main_content=True, form_fields=True) == \
            "foo\n\nbaz\nbar\n\n[ Some text ] [ Insert text ]"
+
+
+def test_main_content_root():
+    # A single element matching one of the main content root selectors becomes the extraction root
+    other = '<div><p>Other</p></div>'
+    assert extract_plain_text(other + '<div class="article-body"><p>Body</p></div>', main_content=True) == 'Body'
+    assert extract_plain_text(other + '<div class="x ARTICLE-BODY"><p>Body</p></div>', main_content=True) == 'Body'
+    assert extract_plain_text(other + '<section role="main"><p>Body</p></section>', main_content=True) == 'Body'
+    assert extract_plain_text(other + '<section role="Main"><p>Body</p></section>', main_content=True) == \
+           'Other\n\nBody'
+
+    # The root is not used if there is more than one match (an element matching two selectors counts twice)
+    html = other + '<div class="post-content"><p>Body</p></div><div class="post-content"><p>Body 2</p></div>'
+    assert extract_plain_text(html, main_content=True) == 'Other\n\nBody\n\nBody 2'
+    html = other + '<main class="main-content" role="main"><p>Body</p></main>'
+    assert extract_plain_text(html, main_content=True) == 'Other\n\nBody'
+
+    # The root itself is never skipped, even if it is a skipped element type
+    html = other + '<noscript class="article-body"><p>Body</p></noscript>'
+    assert extract_plain_text(html, main_content=True) == 'Body'
+
+
+def test_main_content_link_clusters():
+    def nested(html):
+        return '<div><div><div><div>' + html + '</div></div></div></div><p>After</p>'
+
+    # Lists are dropped if more than 20% of their text (with collapsed white space) is link text
+    assert extract_plain_text(nested('<ul><li><a>aaaa</a></li><li>b' + ' ' * 50 + 'c</li></ul>'),
+                              main_content=True) == 'After'
+    assert extract_plain_text(nested('<ul><li><a>aaaa </a></li><li>  ' + 'b ' * 9 + '</li></ul>'),
+                              main_content=True) == 'After'
+
+    # Script text counts as text, nested links count twice
+    assert extract_plain_text(nested('<ul><li><a>link</a>' + 't' * 10 + '<script>' + 'x' * 30 + '</script></li></ul>'),
+                              main_content=True) == '  \u2022 linktttttttttt\n\nAfter'
+    assert extract_plain_text(nested('<ul><li><a href="#">' + 'o' * 10 + '<svg><a>' + 'i' * 40 + '</a></svg></a>' +
+                                     'w' * 300 + '</li></ul>'), main_content=True) == 'After'
+
+    # Deeply nested divs are only checked up to 800 characters of text
+    html = '<div>' * 7 + '<a>link</a> ' * 150 + '</div>' * 7 + '<p>After</p>'
+    assert extract_plain_text(html, main_content=True) == 'After'
+    html = '<div>' * 7 + '<a>link</a> ' * 200 + '</div>' * 7 + '<p>After</p>'
+    assert extract_plain_text(html, main_content=True).startswith('link link')
 
 
 def test_inline_after_block():
