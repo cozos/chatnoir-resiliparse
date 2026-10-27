@@ -25,6 +25,7 @@ import json
 import os
 import struct
 import time
+import zlib
 
 # Extraction configurations: keyword arguments for extract_plain_text(), or a different extraction function
 CONFIGS = {
@@ -35,25 +36,55 @@ CONFIGS = {
 }
 
 
+def decode_content(body, encoding):
+    """Undo an HTTP Content-Encoding, or return None if the body doesn't decode."""
+    encoding = (encoding or '').strip().lower()
+    if encoding in ('', 'identity'):
+        return body
+    try:
+        if encoding in ('gzip', 'x-gzip') and not body.startswith(b'\x1f\x8b'):
+            return body  # already decoded: older crawls store decoded bodies but keep the header
+        if encoding in ('gzip', 'x-gzip', 'deflate'):
+            # gzip or zlib framing (wbits 47 detects which), else raw deflate as some servers send it
+            for wbits in (47, -15):
+                try:
+                    return zlib.decompressobj(wbits).decompress(body)
+                except zlib.error:
+                    pass
+            return None
+        if encoding == 'br':
+            import brotli
+            return brotli.decompress(body)
+    except Exception:
+        return None
+    return body  # an encoding nobody decodes; keep the bytes as they are
+
+
 def dump(warc_path, records_path):
     """Write the HTML response records of a WARC as length-prefixed (URL, payload) pairs."""
     from fastwarc.warc import ArchiveIterator, WarcRecordType
 
-    num_records = 0
+    num_records = skipped = 0
     with open(warc_path, 'rb') as warc, open(records_path, 'wb') as out:
-        # Same record selection as DatologyAI's WARC ingest job
+        # Same record selection as DatologyAI's WARC ingest job. That job decodes bodies with auto_decode='all', but
+        # then one corrupt gzip body raises from the iterator itself and ends the file, so decode content encodings
+        # here instead, which gives the same bytes for every body that decodes and skips the ones that don't.
         for record in ArchiveIterator(warc, record_types=WarcRecordType.response, parse_http=True,
-                                      auto_decode='all', max_header_len=1024 * 1024):
+                                      auto_decode='transfer', max_header_len=1024 * 1024):
             content_type = record.http_headers.get('Content-Type')
             if content_type is None or 'html' not in content_type.lower():
                 continue
             url = (record.headers.get('WARC-Target-URI') or '').encode()
-            html = record.reader.read()
+            html = decode_content(record.reader.read(), record.http_headers.get('Content-Encoding'))
+            if html is None:
+                skipped += 1
+                continue
             out.write(struct.pack('<II', len(url), len(html)))
             out.write(url)
             out.write(html)
             num_records += 1
-    print(f'{num_records} HTML records written to {records_path}')
+    print(f'{num_records} HTML records written to {records_path}'
+          + (f' ({skipped} skipped: body failed to decode)' if skipped else ''))
 
 
 def read_records(records_path, limit=None, urls=False):
