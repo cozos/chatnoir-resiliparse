@@ -56,14 +56,15 @@ def dump(warc_path, records_path):
     print(f'{num_records} HTML records written to {records_path}')
 
 
-def read_records(records_path, limit=None):
-    """Read HTML payloads written by dump()."""
+def read_records(records_path, limit=None, urls=False):
+    """Read HTML payloads written by dump(), or (URL, payload) pairs with ``urls``."""
     records = []
     with open(records_path, 'rb') as f:
         while header := f.read(8):
             url_len, html_len = struct.unpack('<II', header)
-            f.seek(url_len, 1)
-            records.append(f.read(html_len))
+            url = f.read(url_len).decode('utf-8', 'replace')
+            html = f.read(html_len)
+            records.append((url, html) if urls else html)
             if limit and len(records) >= limit:
                 break
     return records
@@ -79,9 +80,9 @@ def export(records_path, out_path, limit):
 
     num_records = 0
     with gzip.open(out_path, 'wt', encoding='utf-8') as out:
-        for html in (r for r in read_records(records_path, limit) if r.strip()):
+        for url, html in (r for r in read_records(records_path, limit, urls=True) if r[1].strip()):
             text = bytes_to_str(html, detect_encoding(html))
-            out.write(json.dumps({'html': text}, ensure_ascii=False) + '\n')
+            out.write(json.dumps({'url': url, 'html': text}, ensure_ascii=False) + '\n')
             num_records += 1
     print(f'{num_records} records written to {out_path}')
 
@@ -128,7 +129,7 @@ def predict(dataset_path, out_path, config):
     print(f'{out_path}: resiliparse {importlib.metadata.version("resiliparse")}, {config}, {idx + 1} documents')
 
 
-def run(records_path, result_path, config, limit, repeat):
+def run(records_path, result_path, config, limit, repeat, texts_path=None):
     from resiliparse.extract import html2text
     from resiliparse.parse.encoding import detect_encoding
     from resiliparse.parse.html import HTMLTree
@@ -167,6 +168,10 @@ def run(records_path, result_path, config, limit, repeat):
         digests=[digest(t) for t in texts])
     with open(result_path, 'w') as f:
         json.dump(result, f)
+    if texts_path:
+        with gzip.open(texts_path, 'wt', encoding='utf-8') as f:
+            for text in texts:
+                f.write(json.dumps(text, ensure_ascii=False) + '\n')
     print(f'{result_path}: resiliparse {result["resiliparse"]}, {config}, {len(records)} records, '
           f'{best["total"]:.2f}s ({1000 * best["total"] / len(records):.2f} ms/record)')
 
@@ -233,6 +238,7 @@ def main():
     p.add_argument('--config', choices=CONFIGS, default='main_content')
     p.add_argument('--limit', type=int, help='use only the first LIMIT records')
     p.add_argument('--repeat', type=int, default=1, help='repeat and keep the fastest run')
+    p.add_argument('--texts', help='also save every output, one JSON string per line, to this .jsonl.gz')
 
     p = commands.add_parser('compare', help='compare run results to the first one')
     p.add_argument('results', nargs='+')
@@ -260,7 +266,7 @@ def main():
     if args.command == 'dump':
         dump(args.warc, args.records)
     elif args.command == 'run':
-        run(args.records, args.result, args.config, args.limit, args.repeat)
+        run(args.records, args.result, args.config, args.limit, args.repeat, args.texts)
     elif args.command == 'merge':
         merge(args.out, args.results)
     elif args.command == 'export':

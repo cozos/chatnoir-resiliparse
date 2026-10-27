@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Compare HTML extraction setups for speed, identical output and quality. See RUNBOOK.md for what it proves and how
-# to read the results.
+# Compare HTML extraction setups for speed, identical output, faithfulness, coverage and quality. See RUNBOOK.md for
+# what it proves and how to read the results.
 #
 # Usage: harness.sh [--warcs N] [--limit RECORDS] [--wmb FILE] [--ours REF] [--from-source]
 #
@@ -77,9 +77,9 @@ while IFS=$'\t' read -r crawl name; do
     dir="$OUT/warcs/$crawl"
     mkdir -p "$dir"
     [ -f "$dir/records.bin" ] || "$PY" "$HERE/bench.py" dump "$BENCH_DIR/warcs/$name" "$dir/records.bin"
-    for v in upstream ours; do
-        "$VENVS/$v/bin/python" "$HERE/bench.py" run "$dir/records.bin" "$dir/$v.json" --limit "$LIMIT" --repeat 2
-    done
+    "$VENVS/upstream/bin/python" "$HERE/bench.py" run "$dir/records.bin" "$dir/upstream.json" --limit "$LIMIT" \
+        --repeat 2 --texts "$dir/upstream.texts.jsonl.gz"
+    "$VENVS/ours/bin/python" "$HERE/bench.py" run "$dir/records.bin" "$dir/ours.json" --limit "$LIMIT" --repeat 2
     "$PY" "$HERE/bench.py" export "$dir/records.bin" "$dir/records.jsonl.gz" --limit "$LIMIT"
     rp "$dir/records.jsonl.gz" "$dir/marin-rust.predictions.jsonl"
     "$PY" "$HERE/bench.py" from-rp "$dir/marin-rust.predictions.jsonl" "$dir/marin-rust.json"
@@ -93,6 +93,9 @@ done
 echo "-- all WARCs"
 "$PY" "$HERE/bench.py" compare "$OUT/all-upstream.json" "$OUT/all-ours.json" "$OUT/all-marin-rust.json" \
     | tee "$OUT/compare-all.txt"
+
+echo "== Faithfulness and coverage of Marin's extractor on Common Crawl"
+"$PY" "$HERE/checks.py" "$OUT" | tee "$OUT/checks.txt"
 
 if [ -z "$WMB" ]; then
     echo "== Quality: skipped (pass --wmb webmainbench.jsonl)"

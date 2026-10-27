@@ -9,7 +9,11 @@ which data, and how to read the results.
 1. **Is this fork a pure speedup?** `ours` must produce byte-identical text to upstream v1.0.9 on every record, and
    the harness reports how much less CPU time it takes.
 2. **What does Marin's extractor cost?** `marin-rust` time per record against upstream on the same records.
-3. **Is Marin's extractor better?** Quality of every setup against human-annotated references (WebMainBench).
+3. **Is Marin's extractor correct on our crawl data?** Its output can't be compared with upstream's for
+   equality, because it keeps different text on purpose. Two checks that need no labels instead: every line it
+   outputs must be on the page (faithfulness), and where it keeps more or less than upstream is measured and sampled
+   for a person to judge (coverage).
+4. **Is Marin's extractor better?** Quality of every setup against human-annotated references (WebMainBench).
 
 ## Setups
 
@@ -81,6 +85,8 @@ To test a change, commit it and pass its ref: `--ours my-branch`. Outputs land i
 |---|---|
 | `warcs/<crawl>/compare.txt` | speed and differing records for one WARC |
 | `compare-all.txt` | the same over all WARCs |
+| `checks.txt`, `checks.json` | faithfulness and coverage of `marin-rust`, overall and by year, per record in the JSON |
+| `review.md` | a fixed random sample of flagged records, upstream and Marin side by side, for a person to read |
 | `quality-wmb.txt`, `quality-wmb.json` | quality on WebMainBench |
 | `*.predictions.jsonl` | every output, for reading examples |
 
@@ -101,6 +107,25 @@ run the same commands from the repository root.
 - **chars, empty**: total output size and records with no output. A setup that keeps more text has more chars;
   that is neither good nor bad until quality says which text it kept.
 
+`checks.py` prints, for `marin-rust` on the same Common Crawl records:
+
+- **faithful**: the share of its output text found on the page. "On the page" means the page's text and
+  `<title>` plus meta descriptions, built by Python's own HTML parser, so it depends on neither extractor. Lines are
+  compared on letters and digits only (no whitespace, punctuation or Markdown marks), and lines under 20 of those
+  are skipped. A rule-based extractor should be close to 100%. What's left is usually lines Marin joined from
+  table cells or labels that aren't next to each other in the HTML; anything invented or garbled is a bug.
+  `review.md` lists examples.
+- **up kept**: the share of upstream's word 5-grams that Marin's output also has, pooled over records. Below 100%
+  means Marin drops text upstream keeps: boilerplate if Marin is right, content if it's wrong.
+- **M in up**: the share of Marin's 5-grams that upstream's output also has. Below 100% means Marin keeps text
+  upstream drops: recovered content (comments, code, tables) or extra boilerplate.
+- **M empty, M drops, up empty, M adds**: records where one side keeps far more than the other (thresholds under the
+  table). These are the records where the extractors disagree most, and `review.md` samples each kind.
+
+The coverage numbers say where the extractors disagree, not who is right. Deciding that takes reading `review.md`
+(and WebMainBench says who is right on average). A fair outcome for Marin is: faithfulness near 100%, most of its
+drops being boilerplate when you read the sample, and better WebMainBench precision at similar recall.
+
 `quality.py` prints, for each setup on WebMainBench:
 
 - **P, R, F1**: ROUGE-5 precision, recall and F1 of the output against the reference, averaged over pages. Low
@@ -120,6 +145,6 @@ first when the question is whether content was kept.
 |---|---|---|
 | A speedup to the Cython extractor | `--warcs 3 --limit 8000` while iterating, then the full run | `0` differing on every WARC; speedup reported on `compare-all.txt` |
 | A change meant to alter output | full run with `--wmb` | F1 and recall on WebMainBench at least as good as before; differing records explained by examples |
-| Deciding whether to adopt `marin-rust` | full run with `--wmb`, plus Marin's test split if you can read it | quality gain worth the time per record; read 20 differing records from 2023+ WARCs before deciding |
+| Deciding whether to adopt `marin-rust` | full run with `--wmb`, plus Marin's test split if you can read it | faithfulness near 100% with no invented text in `review.md`; its drops in `review.md` mostly boilerplate; quality gain worth the time per record |
 
 Report results with the commit of each setup, the machine, and the harness command line.
