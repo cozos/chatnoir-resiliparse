@@ -7,6 +7,9 @@ shipping a wheel.
 - `deps.sh` installs a source tree's native dependencies (lexbor, re2, uchardet, lz4, zlib).
 - `build.sh` builds a variant (git ref, working tree, PyPI release or wheel) into its own virtualenv in `.bench/`.
 - `bench.py` dumps the HTML records of a WARC, benchmarks one variant on them and compares the results.
+- `harness.sh` compares upstream, this fork and Marin's Rust extractor for speed, identical output and quality on a
+  fixed set of WARCs (`warcs.tsv`) and WebMainBench (`quality.py`). [RUNBOOK.md](RUNBOOK.md) says how to run it and
+  read the results.
 
 ## Set up
 
