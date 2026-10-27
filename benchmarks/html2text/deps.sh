@@ -18,7 +18,7 @@ MODE=${3:-vcpkg}
 
 case "$(uname -s)-$(uname -m)" in
     Linux-x86_64) TRIPLET=x64-linux ;;
-    Linux-aarch64) TRIPLET=arm64-linux ;;
+    Linux-aarch64) TRIPLET=aarch64-linux ;;  # the tree's own triplet (shared libraries), the name setup.py expects
     Darwin-arm64) TRIPLET=arm64-osx ;;
     Darwin-x86_64) TRIPLET=x64-osx ;;
     *) echo "Unsupported platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
