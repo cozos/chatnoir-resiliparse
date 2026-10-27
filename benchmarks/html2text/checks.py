@@ -67,6 +67,14 @@ def page_text(html_text):
     return '\n'.join(parser.parts)
 
 
+def garble(text):
+    """The mojibake Marin's extractor repairs: UTF-8 bytes read as Windows-1252 (or Latin-1)."""
+    out = []
+    for codec in ('cp1252', 'latin-1'):
+        out.append(text.encode('utf-8').decode(codec, errors='replace'))
+    return out
+
+
 def shingles(text, n=5):
     words = WORD.findall(text.casefold())
     return {tuple(words[i:i + n]) for i in range(len(words) - n + 1)}
@@ -78,8 +86,22 @@ def read_texts(path):
 
 
 def read_pages(path):
+    """(html, url) per record, one at a time: all pages of a WARC don't fit in memory together."""
     with gzip.open(path, 'rt', encoding='utf-8') as f:
-        return [json.loads(line) for line in f]
+        for line in f:
+            page = json.loads(line)
+            yield page['html'], page.get('url')
+
+
+def batches(items, size):
+    batch = []
+    for item in items:
+        batch.append(item)
+        if len(batch) == size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
 
 
 def read_predictions(path):
@@ -96,7 +118,10 @@ def check_record(args):
     html_text, upstream, marin = args
     page = squash(page_text(html_text))
     lines = [l for l in marin.splitlines() if len(squash(MARKER.sub('', l))) >= MIN_LINE]
-    unfaithful = [l for l in lines if squash(MARKER.sub('', l)) not in page]
+    missing = [l for l in lines if squash(MARKER.sub('', l)) not in page]
+    # Lines Marin repaired from mojibake on the page are on the page once garbled the same way again
+    repaired = [l for l in missing if any(squash(g) in page for g in garble(MARKER.sub('', l)))]
+    unfaithful = [l for l in missing if l not in repaired]
     up, ma = shingles(upstream), shingles(marin)
     common = len(up & ma)
     flags = []
@@ -113,16 +138,20 @@ def check_record(args):
     return dict(
         lines=len(lines), line_chars=sum(len(squash(l)) for l in lines),
         unfaithful_lines=len(unfaithful), unfaithful_chars=sum(len(squash(l)) for l in unfaithful),
+        repaired_lines=len(repaired), repaired_chars=sum(len(squash(l)) for l in repaired),
         up_shingles=len(up), marin_shingles=len(ma), common_shingles=common,
-        up_chars=len(upstream), marin_chars=len(marin), flags=flags), unfaithful
+        up_chars=len(upstream), marin_chars=len(marin), flags=flags,
+        unfaithful_examples=[excerpt(l, 200) for l in unfaithful[:5]])
 
 
 def pooled(rows):
     s = lambda k: sum(r[k] for r in rows)
     return dict(
         records=len(rows),
-        faithful_share=1 - s('unfaithful_chars') / max(1, s('line_chars')),
+        faithful_share=1 - s('unfaithful_chars') / max(1, s('line_chars')),  # repaired lines count as faithful
         records_with_unfaithful=sum(r['unfaithful_lines'] > 0 for r in rows),
+        repaired_share=s('repaired_chars') / max(1, s('line_chars')),
+        records_with_repaired=sum(r['repaired_lines'] > 0 for r in rows),
         upstream_kept=s('common_shingles') / max(1, s('up_shingles')),
         marin_in_upstream=s('common_shingles') / max(1, s('marin_shingles')),
         upstream_chars=s('up_chars'), marin_chars=s('marin_chars'),
@@ -140,22 +169,23 @@ def main():
     parser.add_argument('--sample', type=int, default=50, help='flagged records to put in review.md (default: 50)')
     args = parser.parse_args()
 
-    rows, examples = [], []
+    rows = []
     with multiprocessing.Pool() as pool:
         for crawl in sorted(os.listdir(os.path.join(args.harness_dir, 'warcs'))):
             d = os.path.join(args.harness_dir, 'warcs', crawl)
-            pages = read_pages(os.path.join(d, 'records.jsonl.gz'))
             upstream = read_texts(os.path.join(d, 'upstream.texts.jsonl.gz'))
-            marin = read_predictions(os.path.join(d, 'marin-rust.predictions.jsonl'))
-            if not len(pages) == len(upstream) == len(marin):
-                raise SystemExit(f'{d}: {len(pages)} pages, {len(upstream)} upstream, {len(marin)} marin records')
-            urls = [p.get('url') for p in pages]
-            marin = [m.get('prediction') or '' for m in marin]
-            work = zip((p['html'] for p in pages), upstream, marin)
-            for i, (row, unfaithful) in enumerate(pool.imap(check_record, work, chunksize=64)):
-                row.update(crawl=crawl, idx=i, url=urls[i])
-                rows.append(row)
-                examples.append((upstream[i], marin[i], unfaithful))
+            marin = [m.get('prediction') or '' for m in read_predictions(os.path.join(d, 'marin-rust.predictions.jsonl'))]
+            if len(upstream) != len(marin):
+                raise SystemExit(f'{d}: {len(upstream)} upstream and {len(marin)} marin records')
+            i = 0
+            for batch in batches(read_pages(os.path.join(d, 'records.jsonl.gz')), 512):
+                work = [(html_text, upstream[i + k], marin[i + k]) for k, (html_text, _) in enumerate(batch)]
+                for k, row in enumerate(pool.map(check_record, work, chunksize=16)):
+                    row.update(crawl=crawl, idx=i + k, url=batch[k][1])
+                    rows.append(row)
+                i += len(batch)
+            if i != len(marin):
+                raise SystemExit(f'{d}: {i} pages and {len(marin)} marin records')
 
     by_year = collections.defaultdict(list)
     for r in rows:
@@ -168,6 +198,8 @@ def main():
     print(f'{o["records"]} records, Marin\'s extractor against upstream\'s main content and the page\'s HTML text\n')
     print(f'Faithfulness: {100 * o["faithful_share"]:.2f}% of output text (lines of {MIN_LINE}+ letters and digits) '
           f'is on the page; {o["records_with_unfaithful"]} records have at least one line that isn\'t')
+    print(f'Mojibake repair: {100 * o["repaired_share"]:.2f}% of output text is on the page only in garbled form '
+          f'(UTF-8 read as Windows-1252), repaired by Marin, in {o["records_with_repaired"]} records; counted as faithful')
     print(f'Coverage: Marin keeps {100 * o["upstream_kept"]:.1f}% of upstream\'s word 5-grams; '
           f'{100 * o["marin_in_upstream"]:.1f}% of Marin\'s are also in upstream\'s output')
     print(f'Output size: upstream {o["upstream_chars"] / 1e6:.1f}M chars, Marin {o["marin_chars"] / 1e6:.1f}M\n')
@@ -185,23 +217,36 @@ def main():
     rng = random.Random(SEED)
     kinds = ['marin_empty', 'marin_drops_most', 'upstream_empty', 'marin_adds_most', 'unfaithful']
     per_kind = max(1, args.sample // len(kinds))
+    picks = {}
+    for kind in kinds:
+        flagged = [i for i, r in enumerate(rows) if kind in r['flags']]
+        picks[kind] = sorted(rng.sample(flagged, min(per_kind, len(flagged)))), len(flagged)
+    # Read back only the texts of the sampled records
+    texts = {}
+    for crawl in sorted({rows[i]['crawl'] for picked, _ in picks.values() for i in picked}):
+        d = os.path.join(args.harness_dir, 'warcs', crawl)
+        upstream = read_texts(os.path.join(d, 'upstream.texts.jsonl.gz'))
+        marin = read_predictions(os.path.join(d, 'marin-rust.predictions.jsonl'))
+        for picked, _ in picks.values():
+            for i in picked:
+                if rows[i]['crawl'] == crawl:
+                    texts[i] = upstream[rows[i]['idx']], marin[rows[i]['idx']].get('prediction') or ''
     with open(os.path.join(args.harness_dir, 'review.md'), 'w') as f:
         f.write('# Records to review\n\nA fixed random sample of each kind of flagged record (checks.py). For each, '
                 'decide whether upstream or Marin kept the right content.\n')
         for kind in kinds:
-            picked = [i for i, r in enumerate(rows) if kind in r['flags']]
-            picked = sorted(rng.sample(picked, min(per_kind, len(picked))))
-            f.write(f'\n## {kind} ({sum(kind in r["flags"] for r in rows)} records, showing {len(picked)})\n')
+            picked, total = picks[kind]
+            f.write(f'\n## {kind} ({total} records, showing {len(picked)})\n')
             for i in picked:
                 r = rows[i]
-                up, ma, unfaithful = examples[i]
+                up, ma = texts[i]
                 f.write(f'\n### {r["crawl"]} #{r["idx"]} · {r["url"]}\n\n'
                         f'upstream {r["up_chars"]} chars, Marin {r["marin_chars"]} chars, Marin keeps '
                         f'{100 * r["common_shingles"] / max(1, r["up_shingles"]):.0f}% of upstream\'s 5-grams\n\n'
                         f'**Upstream:**\n\n```\n{excerpt(up)}\n```\n\n**Marin:**\n\n```\n{excerpt(ma)}\n```\n')
-                if unfaithful:
+                if r['unfaithful_examples']:
                     f.write('\n**Marin lines not on the page:**\n\n' +
-                            ''.join(f'- `{excerpt(l, 200)}`\n' for l in unfaithful[:5]))
+                            ''.join(f'- `{l}`\n' for l in r['unfaithful_examples']))
     print(f'\nWrote {os.path.join(args.harness_dir, "checks.json")} and review.md')
 
 

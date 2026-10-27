@@ -112,9 +112,10 @@ run the same commands from the repository root.
 - **faithful**: the share of its output text found on the page. "On the page" means the page's text and
   `<title>` plus meta descriptions, built by Python's own HTML parser, so it depends on neither extractor. Lines are
   compared on letters and digits only (no whitespace, punctuation or Markdown marks), and lines under 20 of those
-  are skipped. A rule-based extractor should be close to 100%. What's left is usually lines Marin joined from
-  table cells or labels that aren't next to each other in the HTML; anything invented or garbled is a bug.
-  `review.md` lists examples.
+  are skipped. A rule-based extractor should be close to 100%. Lines Marin repaired from mojibake on the page
+  (UTF-8 read as Windows-1252, e.g. "mÃ¶chte" to "möchte") count as faithful and are reported separately. What's
+  left is usually lines joined from table cells or labels that aren't next to each other in the HTML, and text in
+  legacy East Asian encodings that the repair garbles; anything invented is a bug. `review.md` lists examples.
 - **up kept**: the share of upstream's word 5-grams that Marin's output also has, pooled over records. Below 100%
   means Marin drops text upstream keeps: boilerplate if Marin is right, content if it's wrong.
 - **M in up**: the share of Marin's 5-grams that upstream's output also has. Below 100% means Marin keeps text
