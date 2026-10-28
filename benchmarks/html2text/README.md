@@ -10,6 +10,9 @@ shipping a wheel.
 - `harness.sh` compares upstream, this fork and Marin's Rust extractor for speed, identical output, faithfulness,
   coverage (`checks.py`) and quality (`quality.py`) on a fixed set of WARCs (`warcs.tsv`) and WebMainBench.
   [RUNBOOK.md](RUNBOOK.md) says how to run it and read the results.
+- `run_html_text.py`, `run_justext.py` and `run_magic.py` score other extractors on the same WebMainBench pages, and
+  `compare.py` compares extractors page by page, with and without Markdown symbols (RUNBOOK.md, "Other extractors
+  on WebMainBench").
 
 ## Set up
 

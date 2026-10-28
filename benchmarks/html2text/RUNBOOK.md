@@ -140,6 +140,68 @@ The references are Markdown, so Markdown output (`marin-rust`) gets credit for m
 pipes, and plain text (`upstream`, `ours`) loses a little precision and recall to formatting alone. Compare recall
 first when the question is whether content was kept.
 
+## Other extractors on WebMainBench
+
+The harness covers upstream, this fork and Marin's extractor. Other extractors are scored against the same pages and
+with the same scorer by writing their predictions in `quality.py`'s format, one script each:
+
+| script | extractor | why it is a useful row |
+|---|---|---|
+| `run_html_text.py` | html-text 0.7.1, all page text | stands in for Common Crawl's WET files (same approach, not their code) |
+| `run_justext.py` | jusText 3.0.2, stock English settings | what Nemotron-CC used, and where Marin's paragraph splitting comes from |
+| `run_magic.py` | magic-html 0.1.8, as plain text and as Markdown | the best rule-based extractor in the Dripper paper's WebMainBench table |
+
+They read `wmb_en.jsonl.gz`, the English WebMainBench pages a full harness run leaves in `$BENCH_DIR/harness`. Run
+them outside the container, from this directory, with the predictions next to the harness's:
+
+```bash
+H=$BENCH_DIR/harness    # or copy wmb_en.jsonl.gz and wmb-*.predictions.jsonl out of the rp-bench volume
+uv run --python 3.11 --with html-text --with lxml-html-clean \
+    python run_html_text.py $H/wmb_en.jsonl.gz $H/wmb-html-text.predictions.jsonl
+uv run --python 3.11 --with justext==3.0.2 --with lxml-html-clean \
+    python run_justext.py $H/wmb_en.jsonl.gz $H/wmb-justext.predictions.jsonl
+uv run --python 3.12 --with magic-html --with html-text --with lxml-html-clean --with markdownify \
+    python run_magic.py $H/wmb_en.jsonl.gz $H/wmb-magic-text.predictions.jsonl $H/wmb-magic-md.predictions.jsonl
+```
+
+Score them with `quality.py` alongside the harness's own predictions, then compare page by page with `compare.py`,
+which also scores "content-only": the same ROUGE-5 after dropping tokens made only of Markdown punctuation from both
+sides, so plain-text and Markdown outputs are judged on which text they kept rather than how they formatted it:
+
+```bash
+uv run --python 3.11 --with jieba python quality.py $H/wmb_en.jsonl.gz \
+    marin-rust=$H/wmb-marin-rust.predictions.jsonl upstream=$H/wmb-upstream.predictions.jsonl \
+    html-text=$H/wmb-html-text.predictions.jsonl justext=$H/wmb-justext.predictions.jsonl \
+    magic-text=$H/wmb-magic-text.predictions.jsonl magic-md=$H/wmb-magic-md.predictions.jsonl
+uv run --python 3.11 --with jieba python compare.py $H/wmb_en.jsonl.gz \
+    marin-rust=$H/wmb-marin-rust.predictions.jsonl magic-text=$H/wmb-magic-text.predictions.jsonl \
+    --perpage perpage.json
+```
+
+Results from 2026-10-28 (harness at 17510ae, 6,647 English pages; times from one process on an Apple-silicon Mac,
+and Marin's from rp-bench's threads, so compare them loosely):
+
+| setup | ROUGE-5 F1 | hard | mid | simple | content-only F1 | empty outputs | ms/page |
+|---|---|---|---|---|---|---|---|
+| marin-rust | 0.692 | 0.593 | 0.706 | 0.780 | 0.780 | 1 | 1.9 |
+| upstream | 0.637 | 0.544 | 0.645 | 0.728 | | 63 | 0.75 |
+| magic-html, plain text | 0.614 | 0.537 | 0.620 | 0.689 | 0.712 | 390 | 14.6 |
+| magic-html, Markdown | 0.580 | 0.494 | 0.581 | 0.672 | 0.628 | 370 | 14.6 |
+| jusText | 0.560 | 0.456 | 0.582 | 0.641 | | 1,200 | 6.3 |
+| html-text | 0.545 | 0.410 | 0.543 | 0.693 | | 0 | 1.8 |
+
+Things to know when reading these:
+
+- Published numbers for the same extractors (the Dripper paper's Table 2: magic-html 0.714, Trafilatura 0.640,
+  Resiliparse 0.629) are on all 7,809 pages through the paper's own pipeline. Upstream lines up with them; magic-html
+  does not reproduce with the stock library and markdownify, so quote our row when comparing with Marin.
+- Empty outputs are the extractors' own decisions, not failures: magic-html returns `<body></body>` when it judges a
+  page to be a list, and stock jusText marks every paragraph of short-line pages as boilerplate.
+- Where marin-rust and magic-html differ most is structured pages: Marin's table rewrite and its 400-character
+  structured-page rescue in `classify_paragraphs`. The DatologyAI doc tab "magic-html vs Marin's Extractor" has the
+  page-by-page breakdown and proposed fixes; the table breakdown there reran Marin's blocks with `blocktool` from the
+  `datologyai/boilerplate-labels` repository.
+
 ## When to run what
 
 | change | run | pass criteria |
